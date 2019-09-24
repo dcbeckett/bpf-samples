@@ -29,11 +29,13 @@ Application              Kernel Required
 `Layer 4 Load Balancer`_     4.17
 `Programmable RSS`_          4.18
 `xdpdump`_                   4.18
+`nat`_                       4.20
 ======================== ===============
 
 .. _Layer 4 Load Balancer: l4lb/
 .. _Programmable RSS: programmable_rss/
 .. _xdpdump: xdpdump/
+.. _nat: nat/
 
 libbpf
 ~~~~~~
