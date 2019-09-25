@@ -57,9 +57,25 @@ static int do_help(int argc, char **argv)
 		"		[aggressive_reap <0 or 1>]\n"
 		"	add new entry to rules map\n"
 		"\n"
+		"  addnat <instance_name>\n"
+		"		key_saddr <ipv4> key_sport <port>\n"
+		"		key_daddr <ipv4> key_dport <port>\n"
+		"		val_saddr <ipv4> val_sport <port>\n"
+		"		val_daddr <ipv4> val_dport <port>\n"
+		"		val_dmac  <mac_addr>\n"
+		"		[aggressive_reap <0 or 1>]\n"
+		"		[pkt_cnt <u32>] [byte_cnt <u32>]\n"
+		"		[override <0 or 1>]\n"
+		"	add new entry to client flow map\n"
+		"\n"
 		"  mapunfill <instance_name>\n"
 		"               key_daddr <ipv4> key_dport <port>\n"
 		"       delete entry in rules map\n"
+		"\n"
+		"  prunenat <instance_name>\n"
+		"		key_daddr <ipv4> key_dport <port>\n"
+		"		key_saddr <ipv4> key_sport <port>\n"
+		"       delete entry in client flow map\n"
 		"\n"
 		"ARGS:\n"
 		"  -i	interface\n"
@@ -604,11 +620,357 @@ static int do_map_unfill(int argc, char **argv)
 	return 0;
 }
 
+static int do_add_nat(int argc, char **argv)
+{
+	struct egress_nat_value ingress_val = {};
+	__u32 val_pkt_cnt = 0, val_byte_cnt = 0;
+	__u32 key_saddr = 0, key_daddr = 0;
+	__u16 key_sport = 0, key_dport = 0;
+	__u32 val_saddr = 0, val_daddr = 0;
+	__u16 val_sport = 0, val_dport = 0;
+	struct ether_addr *val_dmac = NULL;
+	struct flow_key ingress_key = {};
+	bool aggressive_reap = 0;
+	char path[PATH_MAX];
+	unsigned long tmp;
+	int fixed_len;
+	bool override = 0;
+	char *endptr;
+	int map_fd;
+
+	if (!REQ_ARGS(1))
+		return -1;
+
+	instance_name = argv[0];
+	NEXT_ARG();
+
+	fixed_len = strlen(prefix) + 1;
+	snprintf(path, sizeof(path) - fixed_len, "%s%s_flows", prefix,
+		 instance_name);
+
+	map_fd = bpf_obj_get(path);
+	if (map_fd < 0) {
+		p_err("failed to get map fd from id");
+		return -1;
+	}
+
+	while (argc) {
+		if (!strcmp(*argv, "key_saddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &key_saddr) != 1) {
+				p_err("failed to parse key_saddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "key_daddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &key_daddr) != 1) {
+				p_err("failed to parse key_daddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "key_sport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse key_sport");
+				return -1;
+			}
+			key_sport = htons(tmp);
+		} else if (!strcmp(*argv, "key_dport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse key_dport");
+				return -1;
+			}
+			key_dport = htons(tmp);
+		} else if (!strcmp(*argv, "val_saddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &val_saddr) != 1) {
+				p_err("failed to parse val_saddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "val_daddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &val_daddr) != 1) {
+				p_err("failed to parse val_daddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "val_sport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse val_sport");
+				return -1;
+			}
+			val_sport = htons(tmp);
+		} else if (!strcmp(*argv, "val_dport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse val_dport");
+				return -1;
+			}
+			val_dport = htons(tmp);
+		} else if (!strcmp(*argv, "val_dmac")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			val_dmac = ether_aton(argv[0]);
+			if (!val_dmac) {
+				p_err("failed to parse ether address");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "aggressive_reap")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 1) {
+				p_err("failed to parse aggressive_reap");
+				return -1;
+			}
+			aggressive_reap = htons(tmp);
+		} else if (!strcmp(*argv, "pkt_cnt")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffffffff) {
+				p_err("failed to parse packet count");
+				return -1;
+			}
+			val_pkt_cnt = tmp;
+		} else if (!strcmp(*argv, "byte_cnt")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffffffff) {
+				p_err("failed to parse packet count");
+				return -1;
+			}
+			val_byte_cnt = tmp;
+		} else if (!strcmp(*argv, "override")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 1) {
+				p_err("failed to parse in_use");
+				return -1;
+			}
+			override = tmp;
+		} else {
+			p_err("expected no more arguments, 'key_saddr'," \
+			      "'key_sport', 'key_daddr', 'key_dport'," \
+			      "'val_saddr', 'val_daddr', 'val_sport'," \
+			      "'val_dport', 'aggressive_reap', 'pkt_cnt'," \
+			      "'byte_cnt', 'override', 'got: '%s'?",
+			      *argv);
+			return -1;
+		}
+		NEXT_ARG();
+	}
+
+	ingress_key.saddr = key_saddr;
+	ingress_key.daddr = key_daddr;
+	ingress_key.sport = key_sport;
+	ingress_key.dport = key_dport;
+
+	ingress_val.saddr = val_saddr;
+	ingress_val.daddr = val_daddr;
+	ingress_val.sport = val_sport;
+	ingress_val.dport = val_dport;
+	ingress_val.aggressive_reap = aggressive_reap;
+	ingress_val.pkt_cnt = val_pkt_cnt;
+	ingress_val.byte_cnt = val_byte_cnt;
+
+	if (val_dmac)
+		memcpy(&ingress_val.dmac, val_dmac, sizeof(struct ether_addr));
+
+	if (bpf_map_update_elem(map_fd, &ingress_key, &ingress_val,
+				override ? BPF_ANY : BPF_NOEXIST)) {
+			p_err("failed to update map: %s", strerror(errno));
+			return -1;
+	}
+
+	return 0;
+}
+
+static int do_prune_nat(int argc, char **argv)
+{
+	struct egress_nat_value tuple_val = {};
+	__u32 key_daddr = 0, key_saddr = 0;
+	__u16 key_dport = 0, key_sport = 0;
+	struct flow_key rev_flow_key = {};
+	struct flow_key flow_key = {};
+	char s_ip[INET6_ADDRSTRLEN];
+	char d_ip[INET6_ADDRSTRLEN];
+	char path[PATH_MAX];
+	unsigned long tmp;
+	int flow_map_fd;
+	int fixed_len;
+	char *endptr;
+
+	if (!REQ_ARGS(1))
+		return -1;
+
+	instance_name = argv[0];
+	NEXT_ARG();
+
+	fixed_len = strlen(prefix) + 1;
+	snprintf(path, sizeof(path) - fixed_len, "%s%s_flows", prefix,
+		 instance_name);
+
+	flow_map_fd = bpf_obj_get(path);
+	if (flow_map_fd < 0) {
+		p_err("failed to get map fd from id");
+		return -1;
+	}
+
+	while (argc) {
+		if (!strcmp(*argv, "key_daddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &key_daddr) != 1) {
+				p_err("failed to parse key_daddr");
+				return -1;
+			}
+			NEXT_ARG();
+		} else if (!strcmp(*argv, "key_dport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse key_dport");
+				return -1;
+			}
+			key_dport = htons(tmp);
+			NEXT_ARG();
+		} else if (!strcmp(*argv, "key_saddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &key_saddr) != 1) {
+				p_err("failed to parse key_daddr");
+				return -1;
+			}
+			NEXT_ARG();
+		} else if (!strcmp(*argv, "key_sport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 10);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse key_dport");
+				return -1;
+			}
+			key_sport = htons(tmp);
+			NEXT_ARG();
+		} else {
+			p_err("expected no more arguments, 'key_daddr'," \
+			      "'key_dport', 'key_saddr', 'key_sport'," \
+			      "got: '%s'?",
+			      *argv);
+			return -1;
+		}
+	}
+
+	flow_key.saddr = key_saddr;
+	flow_key.sport = key_sport;
+	flow_key.daddr = key_daddr;
+	flow_key.dport = key_dport;
+
+	/* First lookup the flow to find the corresponding reverse flow */
+	if (!bpf_map_lookup_elem(flow_map_fd, &flow_key, &tuple_val)) {
+		if (bpf_map_delete_elem(flow_map_fd, &flow_key)) {
+			p_err("failed to delete forward flow: %s",
+			      strerror(errno));
+			return -1;
+		}
+
+		inet_ntop(AF_INET, &flow_key.saddr, s_ip,
+			  INET_ADDRSTRLEN);
+		inet_ntop(AF_INET, &flow_key.daddr, d_ip,
+			  INET_ADDRSTRLEN);
+		printf("Deleted flow from map: %s", s_ip);
+		printf(":%d ", htons(flow_key.sport));
+		printf("-> %s", d_ip);
+		printf(":%d\n", htons(flow_key.dport));
+
+		if (tuple_val.aggressive_reap == 0) {
+			/* Delete flow in the other direction */
+			rev_flow_key.saddr = tuple_val.daddr;
+			rev_flow_key.sport = tuple_val.dport;
+			rev_flow_key.daddr = tuple_val.saddr;
+			rev_flow_key.dport = tuple_val.sport;
+
+			if (bpf_map_delete_elem(flow_map_fd, &rev_flow_key)) {
+				p_err("failed to delete reverse flow: %s",
+				      strerror(errno));
+			} else {
+				inet_ntop(AF_INET, &rev_flow_key.saddr, s_ip,
+					  INET_ADDRSTRLEN);
+				inet_ntop(AF_INET, &rev_flow_key.daddr, d_ip,
+					  INET_ADDRSTRLEN);
+				printf("Deleted flow from map: %s", s_ip);
+				printf(":%d ", htons(rev_flow_key.sport));
+				printf("-> %s", d_ip);
+				printf(":%d\n", htons(rev_flow_key.dport));
+			}
+		} else {
+			printf("skipping reverse flow, as its a reap flow\n");
+		}
+	} else {
+		printf("Key not found in flow map\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 static const struct cmd cmds[] = {
 	{ "help",	do_help },
 	{ "load",	do_load },
 	{ "mapfill",	do_map_fill },
 	{ "mapunfill",  do_map_unfill },
+	{ "addnat",    do_add_nat },
+	{ "prunenat",  do_prune_nat },
 	{ 0 }
 };
 
