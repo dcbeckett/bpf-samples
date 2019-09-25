@@ -13,6 +13,7 @@
 #include <bpf/libbpf.h>
 #include <linux/if_link.h>
 #include <net/if.h>
+#include <netinet/ether.h>
 #include <sys/resource.h>
 
 #include "nat_common.h"
@@ -38,6 +39,17 @@ static int do_help(int argc, char **argv)
 		"CMD:\n"
 		"  load <instance name for pinning maps>\n"
 		"	load program and maps, start polling\n"
+		"\n"
+		"  mapfill <instance_name>\n"
+		"		key_daddr <ipv4> key_dport <port>\n"
+		"		val_daddr <ipv4> val_dport <port>\n"
+		"		val_saddr <ipv4> val_dmac <mac_addr>\n"
+		"		[aggressive_reap <0 or 1>]\n"
+		"	add new entry to rules map\n"
+		"\n"
+		"  mapunfill <instance_name>\n"
+		"               key_daddr <ipv4> key_dport <port>\n"
+		"       delete entry in rules map\n"
 		"\n"
 		"ARGS:\n"
 		"  -i	interface\n"
@@ -219,9 +231,212 @@ static int do_load(int argc, char **argv)
 	return 0;
 }
 
+static int do_map_fill(int argc, char **argv)
+{
+	struct ether_addr *val_dmac = NULL;
+	struct rule_value newval = {};
+	bool aggressive_reap = 0;
+	struct pkt_dst key = {};
+	__u32 key_daddr = 0;
+	__u16 key_dport = 0;
+	__u32 val_saddr = 0;
+	__u32 val_daddr = 0;
+	__u16 val_dport = 0;
+	char path[PATH_MAX];
+	unsigned long tmp;
+	int fixed_len;
+	char *endptr;
+	int map_fd;
+
+	if (!REQ_ARGS(1))
+		return -1;
+
+	instance_name = argv[0];
+	NEXT_ARG();
+
+	fixed_len = strlen(prefix) + 1;
+	snprintf(path, sizeof(path) - fixed_len, "%s%s_rules", prefix,
+		 instance_name);
+
+	map_fd = bpf_obj_get(path);
+	if (map_fd < 0) {
+		p_err("failed to get map fd from id");
+		return -1;
+	}
+
+	while (argc) {
+		if (!strcmp(*argv, "key_daddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &key_daddr) != 1) {
+				p_err("failed to parse key_daddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "key_dport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 0);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse key_dport");
+				return -1;
+			}
+			key_dport = htons(tmp);
+		} else if (!strcmp(*argv, "val_saddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &val_saddr) != 1) {
+				p_err("failed to parse val_saddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "val_daddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &val_daddr) != 1) {
+				p_err("failed to parse val_daddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "val_dport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 0);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse val_dport");
+				return -1;
+			}
+			val_dport = htons(tmp);
+		} else if (!strcmp(*argv, "val_dmac")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			val_dmac = ether_aton(argv[0]);
+			if (!val_dmac) {
+				p_err("failed to parse ether address");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "aggressive_reap")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 0);
+			if (*endptr != '\0' || tmp > 1) {
+				p_err("failed to parse aggressive_reap");
+				return -1;
+			}
+			aggressive_reap = htons(tmp);
+		} else {
+			p_err("expected no more arguments, 'key_daddr'," \
+			      "'key_dport', 'val_saddr', 'val_daddr'," \
+			      "'val_dport', 'val_dmac', 'aggressive_reap'," \
+			      " got: '%s'?",
+			      *argv);
+			return -1;
+		}
+		NEXT_ARG();
+	}
+
+	key.daddr = key_daddr;
+	key.dport = key_dport;
+
+	newval.saddr = val_saddr;
+	newval.daddr = val_daddr;
+	newval.dport = val_dport;
+	newval.aggressive_reap = aggressive_reap;
+
+	if (val_dmac)
+		memcpy(&newval.dmac, val_dmac, sizeof(struct ether_addr));
+
+	if (bpf_map_update_elem(map_fd, &key, &newval, BPF_ANY)) {
+		p_err("failed to update map: %s", strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
+static int do_map_unfill(int argc, char **argv)
+{
+	struct pkt_dst key = {};
+	unsigned long tmp = 0;
+	__u32 key_daddr = 0;
+	__u16 key_dport = 0;
+	char path[PATH_MAX];
+	int fixed_len;
+	char *endptr;
+	int map_fd;
+
+	if (!REQ_ARGS(1))
+		return -1;
+
+	instance_name = argv[0];
+	NEXT_ARG();
+
+	fixed_len = strlen(prefix) + 1;
+	snprintf(path, sizeof(path) - fixed_len, "%s%s_rules", prefix,
+		 instance_name);
+
+	map_fd = bpf_obj_get(path);
+	if (map_fd < 0) {
+		p_err("failed to get map fd from id");
+		return -1;
+	}
+
+	while (argc) {
+		if (!strcmp(*argv, "key_daddr")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			if (inet_pton(AF_INET, argv[0], &key_daddr) != 1) {
+				p_err("failed to parse key_daddr");
+				return -1;
+			}
+		} else if (!strcmp(*argv, "key_dport")) {
+			NEXT_ARG();
+			if (!REQ_ARGS(1))
+				return -1;
+
+			tmp = strtoul(argv[0], &endptr, 0);
+			if (*endptr != '\0' || tmp > 0xffff) {
+				p_err("failed to parse key_dport");
+				return -1;
+			}
+			key_dport = htons(tmp);
+		} else {
+			p_err("expected no more arguments, 'key_daddr', 'key_dport' got: '%s'?",
+			      *argv);
+			return -1;
+		}
+		NEXT_ARG();
+	}
+
+	key.daddr = key_daddr;
+	key.dport = key_dport;
+
+	if (bpf_map_delete_elem(map_fd, &key)) {
+		p_err("failed to delete map entry: %s", strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
 static const struct cmd cmds[] = {
 	{ "help",	do_help },
 	{ "load",	do_load },
+	{ "mapfill",	do_map_fill },
+	{ "mapunfill",  do_map_unfill },
 	{ 0 }
 };
 
