@@ -11,6 +11,8 @@ LIBBPF_DIR = ../libbpf/src/
 
 XDP_C = ${TARGET:=_kern.c}
 XDP_OBJ = ${XDP_C:.c=.o}
+USER_C = ${TARGET:=_user.c}
+USER_OBJ = ${USER_C:.c=.o}
 OBJECT_LIBBPF = $(LIBBPF_DIR)/libbpf.a
 
 CFLAGS ?= -I$(LIBBPF_DIR)/root/usr/include/
@@ -21,7 +23,7 @@ LDFLAGS ?= -L$(LIBBPF_DIR)
 
 LIBS = -lbpf -lelf
 
-all: llvm-check $(XDP_OBJ)
+all: llvm-check $(TARGET) $(XDP_OBJ)
 
 .PHONY: clean $(CLANG) $(LLC)
 
@@ -49,6 +51,9 @@ $(OBJECT_LIBBPF):
 		cd $(LIBBPF_DIR) && $(MAKE) all; \
 		mkdir -p root; DESTDIR=root $(MAKE) install_headers; \
 	fi
+
+$(TARGET): %: %_user.c $(OBJECT_LIBBPF) Makefile
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 
 $(XDP_OBJ): %.o: %.c
 	$(CLANG) -S \
