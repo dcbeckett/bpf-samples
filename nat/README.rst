@@ -173,6 +173,8 @@ An external application can poll these flow counters through bpftool ::
 The counters are stored within the final 16 hex values.
 The number of packets in the flow (0x 00 00 00 00 00 00 00 30 = 48)
 followed by the total number of Bytes (0x 00 00 00 00 00 01 1b 80 = 72,576)
+A demo python application for doing this can be seen within the demo directory
+(nat_flow_manager.py).
 
 Note BPF maps are in host endian.
 
